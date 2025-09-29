@@ -21,15 +21,12 @@ let peerConnection;
 let currentRoom = null;
 let isVideoEnabled = true;
 let isAudioEnabled = true;
+let isOfferer = false;
 
 // Переменные для теста микрофона
 let isTestingMic = false;
 let testStream = null;
 let echoAudio = null;
-let audioContext = null;
-let analyser = null;
-let microphone = null;
-let javascriptNode = null;
 
 // Конфигурация WebRTC
 const configuration = {
@@ -42,13 +39,11 @@ const configuration = {
 // ==================== ИНИЦИАЛИЗАЦИЯ ====================
 
 document.addEventListener('DOMContentLoaded', function() {
-    // Обработчики кнопок
     const testMicBtn = document.getElementById('testMicBtn');
     if (testMicBtn) {
         testMicBtn.addEventListener('click', testMicrophoneWithVisualizer);
     }
     
-    // Инициализируем приложение
     init();
 });
 
@@ -115,6 +110,7 @@ function initSocket() {
         roomStatusEl.textContent = roomId;
         updateStatus(`Комната создана: ${roomId}`, 'connected');
         leaveBtn.disabled = false;
+        isOfferer = true; // Создатель комнаты будет офферером
     });
     
     socket.on('room-joined', (data) => {
@@ -122,13 +118,7 @@ function initSocket() {
         roomStatusEl.textContent = data.roomId;
         updateStatus(`Присоединились к комнате: ${data.roomId}`, 'connected');
         leaveBtn.disabled = false;
-        
-        // Если в комнате есть другие пользователи, устанавливаем соединение
-        if (data.users && data.users.length > 0) {
-            data.users.forEach(userId => {
-                createPeerConnection(true);
-            });
-        }
+        isOfferer = false; // Присоединившийся будет ансвером
     });
     
     socket.on('room-not-found', (roomId) => {
@@ -139,8 +129,11 @@ function initSocket() {
         console.log(`👤 Пользователь присоединился: ${data.userId}`);
         updateStatus(`Пользователь присоединился: ${data.userId}`, 'connected');
         
-        // Создаем peer connection как инициатор
-        await createPeerConnection(true);
+        // Если мы создатель комнаты, инициируем соединение
+        if (isOfferer) {
+            await createPeerConnection();
+            await createOffer();
+        }
     });
     
     socket.on('user-left', (userId) => {
@@ -156,14 +149,17 @@ function initSocket() {
     
     // WebRTC события
     socket.on('webrtc-offer', async (data) => {
+        console.log('📨 Получен оффер от:', data.from);
         await handleOffer(data);
     });
     
     socket.on('webrtc-answer', async (data) => {
+        console.log('📨 Получен ответ от:', data.from);
         await handleAnswer(data);
     });
     
     socket.on('webrtc-ice-candidate', async (data) => {
+        console.log('📨 Получен ICE кандидат от:', data.from);
         await handleIceCandidate(data);
     });
     
@@ -173,12 +169,13 @@ function initSocket() {
     });
 }
 
-// ==================== WEBRTC ====================
+// ==================== WEBRTC - ПЕРЕПИСАННАЯ ЛОГИКА ====================
 
-async function createPeerConnection(isInitiator = false) {
+async function createPeerConnection() {
+    // Закрываем существующее соединение
     if (peerConnection) {
-        console.log('⚠️ Peer connection уже существует, закрываю старый');
         peerConnection.close();
+        peerConnection = null;
     }
     
     // Убедимся что localStream существует
@@ -208,6 +205,7 @@ async function createPeerConnection(isInitiator = false) {
     // Обработка ICE кандидатов
     peerConnection.onicecandidate = (event) => {
         if (event.candidate && currentRoom) {
+            console.log('📤 Отправляю ICE кандидат');
             socket.emit('webrtc-ice-candidate', {
                 candidate: event.candidate,
                 target: getOtherUsers()
@@ -220,18 +218,19 @@ async function createPeerConnection(isInitiator = false) {
         const state = peerConnection.iceConnectionState;
         connectionStatusEl.textContent = `ICE: ${state}`;
         console.log(`ICE состояние: ${state}`);
+        
+        if (state === 'connected' || state === 'completed') {
+            updateStatus('P2P соединение установлено', 'connected');
+        }
     };
     
     peerConnection.onsignalingstatechange = () => {
         console.log(`Signaling состояние: ${peerConnection.signalingState}`);
     };
     
-    // Если мы инициатор, создаем оффер
-    if (isInitiator) {
-        setTimeout(() => {
-            createOffer();
-        }, 500);
-    }
+    peerConnection.onconnectionstatechange = () => {
+        console.log(`Connection состояние: ${peerConnection.connectionState}`);
+    };
     
     return peerConnection;
 }
@@ -239,58 +238,80 @@ async function createPeerConnection(isInitiator = false) {
 async function createOffer() {
     try {
         if (!peerConnection) {
-            console.error('❌ peerConnection не создан');
-            return;
+            await createPeerConnection();
         }
         
         console.log('📤 Создаю оффер...');
-        const offer = await peerConnection.createOffer();
+        const offer = await peerConnection.createOffer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: true
+        });
+        
+        console.log('✅ Оффер создан, устанавливаю local description');
         await peerConnection.setLocalDescription(offer);
         
+        console.log('📤 Отправляю оффер...');
         socket.emit('webrtc-offer', {
             offer: offer,
             target: getOtherUsers()
         });
         
-        console.log('✅ Оффер создан и отправлен');
     } catch (error) {
         console.error('❌ Ошибка создания оффера:', error);
     }
 }
 
 async function handleOffer(data) {
-    console.log('📨 Получен оффер от:', data.from);
-    
-    if (!peerConnection) {
-        await createPeerConnection(false);
-    }
-    
     try {
-        await peerConnection.setRemoteDescription(data.offer);
-        console.log('✅ Remote description (offer) установлен');
+        console.log('🔄 Обрабатываю оффер...');
         
+        if (!peerConnection) {
+            await createPeerConnection();
+        }
+        
+        // Проверяем текущее состояние
+        if (peerConnection.signalingState !== 'stable') {
+            console.log('⚠️ Signaling state не stable, жду...');
+            setTimeout(() => handleOffer(data), 1000);
+            return;
+        }
+        
+        console.log('✅ Устанавливаю remote description (offer)...');
+        await peerConnection.setRemoteDescription(data.offer);
+        
+        console.log('📤 Создаю ответ...');
         const answer = await peerConnection.createAnswer();
+        
+        console.log('✅ Устанавливаю local description (answer)...');
         await peerConnection.setLocalDescription(answer);
         
+        console.log('📤 Отправляю ответ...');
         socket.emit('webrtc-answer', {
             answer: answer,
             target: data.from
         });
         
-        console.log('📤 Ответ отправлен');
     } catch (error) {
         console.error('❌ Ошибка обработки оффера:', error);
     }
 }
 
 async function handleAnswer(data) {
-    console.log('📨 Получен ответ от:', data.from);
-    
     try {
-        if (peerConnection) {
-            await peerConnection.setRemoteDescription(data.answer);
-            console.log('✅ Remote description (answer) установлен');
+        if (!peerConnection) {
+            console.error('❌ Peer connection не существует');
+            return;
         }
+        
+        // Проверяем что мы в состоянии 'have-local-offer'
+        if (peerConnection.signalingState !== 'have-local-offer') {
+            console.log('⚠️ Неправильное состояние для answer:', peerConnection.signalingState);
+            return;
+        }
+        
+        console.log('✅ Устанавливаю remote description (answer)...');
+        await peerConnection.setRemoteDescription(data.answer);
+        
     } catch (error) {
         console.error('❌ Ошибка обработки ответа:', error);
     }
@@ -299,8 +320,8 @@ async function handleAnswer(data) {
 async function handleIceCandidate(data) {
     try {
         if (peerConnection && data.candidate) {
+            console.log('✅ Добавляю ICE кандидат...');
             await peerConnection.addIceCandidate(data.candidate);
-            console.log('✅ ICE кандидат добавлен');
         }
     } catch (error) {
         console.error('❌ Ошибка добавления ICE кандидата:', error);
@@ -383,54 +404,15 @@ async function testMicrophoneWithVisualizer() {
                 video: false 
             });
             
-            // Показываем панель визуализации
-            document.getElementById('micTestPanel').style.display = 'block';
-            
-            // Создаем AudioContext для анализа звука
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            analyser = audioContext.createAnalyser();
-            microphone = audioContext.createMediaStreamSource(testStream);
-            javascriptNode = audioContext.createScriptProcessor(2048, 1, 1);
-            
-            analyser.smoothingTimeConstant = 0.8;
-            analyser.fftSize = 1024;
-            
-            microphone.connect(analyser);
-            analyser.connect(javascriptNode);
-            javascriptNode.connect(audioContext.destination);
-            
-            // Анализируем уровень звука
-            javascriptNode.onaudioprocess = function() {
-                const array = new Uint8Array(analyser.frequencyBinCount);
-                analyser.getByteFrequencyData(array);
-                
-                let values = 0;
-                for (let i = 0; i < array.length; i++) {
-                    values += array[i];
-                }
-                
-                const average = values / array.length;
-                const percentage = Math.min(100, (average / 256) * 100);
-                
-                document.getElementById('volumeLevel').style.width = percentage + '%';
-                
-                const volumeLevel = document.getElementById('volumeLevel');
-                if (percentage < 30) {
-                    volumeLevel.style.background = '#28a745';
-                } else if (percentage < 70) {
-                    volumeLevel.style.background = '#ffc107';
-                } else {
-                    volumeLevel.style.background = '#dc3545';
-                }
-            };
-            
             // Воспроизводим эхо
             echoAudio = document.getElementById('echoAudio');
             echoAudio.srcObject = testStream;
             await echoAudio.play();
             
             isTestingMic = true;
-            updateStatus('Тест микрофона активен - говорите и смотрите уровень', 'connected');
+            document.getElementById('testMicBtn').textContent = '🔇 Выключить эхо';
+            document.getElementById('testMicBtn').style.background = '#dc3545';
+            updateStatus('Эхо включено - говорите в микрофон', 'connected');
             
         } catch (error) {
             console.error('Ошибка:', error);
@@ -447,20 +429,15 @@ function stopMicrophoneTest() {
         testStream = null;
     }
     
-    if (audioContext) {
-        audioContext.close();
-        audioContext = null;
-    }
-    
     if (echoAudio) {
         echoAudio.pause();
         echoAudio.srcObject = null;
     }
     
-    document.getElementById('micTestPanel').style.display = 'none';
     isTestingMic = false;
-    
-    updateStatus('Тест микрофона завершен', 'disconnected');
+    document.getElementById('testMicBtn').textContent = '🎤 Тест микрофона';
+    document.getElementById('testMicBtn').style.background = '#28a745';
+    updateStatus('Эхо выключено', 'disconnected');
 }
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
