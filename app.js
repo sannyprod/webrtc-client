@@ -38,11 +38,6 @@ const configuration = {
 async function init() {
     await initMediaStream();
     initSocket();
-
-    const testMicBtn = document.getElementById('voiceTestNew');
-    if (testMicBtn) {
-        testMicBtn.addEventListener('click', voiceTestNew);
-    }    
 }
 
 // Инициализация медиапотока
@@ -330,7 +325,7 @@ async function requestMediaPermissions() {
 }
 
 async function testMicrophoneWithEcho() {
-    const testMicBtn = document.getElementById('testMicBtn');
+    const testMicBtn = document.getElementById('voiceTestNew');
     
     if (!isTestingMic) {
         // Включаем тест
@@ -395,7 +390,7 @@ function stopMicrophoneTest() {
     
     // Обновляем UI
     isTestingMic = false;
-    const testMicBtn = document.getElementById('testMicBtn');
+    const testMicBtn = document.getElementById('voiceTestNew');
     testMicBtn.innerHTML = '🎤 Тест микрофона (включить эхо)';
     testMicBtn.style.background = '#28a745';
     
