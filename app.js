@@ -22,9 +22,14 @@ let currentRoom = null;
 let isVideoEnabled = true;
 let isAudioEnabled = true;
 
+// Переменные для теста микрофона
 let isTestingMic = false;
 let testStream = null;
 let echoAudio = null;
+let audioContext = null;
+let analyser = null;
+let microphone = null;
+let javascriptNode = null;
 
 // Конфигурация WebRTC
 const configuration = {
@@ -34,13 +39,26 @@ const configuration = {
     ]
 };
 
-// Инициализация при загрузке
+// ==================== ИНИЦИАЛИЗАЦИЯ ====================
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Обработчики кнопок
+    const testMicBtn = document.getElementById('testMicBtn');
+    if (testMicBtn) {
+        testMicBtn.addEventListener('click', testMicrophoneWithVisualizer);
+    }
+    
+    // Инициализируем приложение
+    init();
+});
+
 async function init() {
     await initMediaStream();
     initSocket();
 }
 
-// Инициализация медиапотока
+// ==================== МЕДИА ПОТОК ====================
+
 async function initMediaStream() {
     try {
         console.log('🔄 Запрашиваю доступ к медиаустройствам...');
@@ -54,16 +72,33 @@ async function initMediaStream() {
         localVideo.srcObject = localStream;
         updateStatus('Микрофон и камера подключены', 'connected');
         
-        return localStream; // Возвращаем stream
+        return localStream;
         
     } catch (error) {
         console.error('❌ Ошибка доступа к медиаустройствам:', error);
-        updateStatus(`Ошибка: ${error.message}`, 'disconnected');
+        
+        let errorMessage = 'Неизвестная ошибка';
+        switch(error.name) {
+            case 'NotAllowedError':
+                errorMessage = 'Доступ к камере/микрофону запрещен. Нажмите на значок 🔒 слева от адреса и разрешите доступ';
+                break;
+            case 'NotFoundError':
+                errorMessage = 'Камера или микрофон не найдены';
+                break;
+            case 'NotReadableError':
+                errorMessage = 'Камера или микрофон уже используются другим приложением';
+                break;
+            default:
+                errorMessage = `Ошибка: ${error.message}`;
+        }
+        
+        updateStatus(errorMessage, 'disconnected');
         return null;
     }
 }
 
-// Инициализация Socket.io
+// ==================== SOCKET.IO ====================
+
 function initSocket() {
     socket = io(SERVER_URL);
     
@@ -91,7 +126,7 @@ function initSocket() {
         // Если в комнате есть другие пользователи, устанавливаем соединение
         if (data.users && data.users.length > 0) {
             data.users.forEach(userId => {
-                createPeerConnection();
+                createPeerConnection(true);
             });
         }
     });
@@ -100,13 +135,18 @@ function initSocket() {
         updateStatus(`Комната ${roomId} не найдена`, 'disconnected');
     });
     
-    socket.on('user-joined', (data) => {
+    socket.on('user-joined', async (data) => {
+        console.log(`👤 Пользователь присоединился: ${data.userId}`);
         updateStatus(`Пользователь присоединился: ${data.userId}`, 'connected');
-        createPeerConnection();
+        
+        // Создаем peer connection как инициатор
+        await createPeerConnection(true);
     });
     
     socket.on('user-left', (userId) => {
+        console.log(`👤 Пользователь покинул: ${userId}`);
         updateStatus(`Пользователь покинул: ${userId}`, 'connected');
+        
         if (peerConnection) {
             peerConnection.close();
             peerConnection = null;
@@ -133,55 +173,12 @@ function initSocket() {
     });
 }
 
-// Создание комнаты
-async function createRoom() {
-    const roomId = Math.random().toString(36).substring(2, 8);
-    roomInput.value = roomId;
-    
-    // Сначала инициализируем медиапоток если его нет
-    if (!localStream) {
-        await initMediaStream();
-    }
-    
-    socket.emit('create-room', roomId);
-}
+// ==================== WEBRTC ====================
 
-// Присоединение к комнате
-async function joinRoom() {
-    const roomId = roomInput.value.trim();
-    if (roomId) {
-        // Сначала инициализируем медиапоток если его нет
-        if (!localStream) {
-            await initMediaStream();
-        }
-        
-        socket.emit('join-room', roomId);
-    } else {
-        alert('Введите ID комнаты');
-    }
-}
-
-// Покинуть комнату
-function leaveRoom() {
-    if (currentRoom) {
-        socket.emit('leave-room', currentRoom);
-        currentRoom = null;
-        roomStatusEl.textContent = 'Нет';
-        leaveBtn.disabled = true;
-        updateStatus('Покинули комнату', 'disconnected');
-        
-        if (peerConnection) {
-            peerConnection.close();
-            peerConnection = null;
-        }
-        remoteVideo.srcObject = null;
-    }
-}
-
-// Создание Peer Connection
-async function createPeerConnection() {
+async function createPeerConnection(isInitiator = false) {
     if (peerConnection) {
-        return; // Уже создано
+        console.log('⚠️ Peer connection уже существует, закрываю старый');
+        peerConnection.close();
     }
     
     // Убедимся что localStream существует
@@ -190,9 +187,10 @@ async function createPeerConnection() {
         await initMediaStream();
     }
     
+    console.log('🔄 Создаю peer connection...');
     peerConnection = new RTCPeerConnection(configuration);
     
-    // Добавляем локальные треки (только если они есть)
+    // Добавляем локальные треки
     if (localStream) {
         localStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, localStream);
@@ -217,23 +215,35 @@ async function createPeerConnection() {
         }
     };
     
+    // Отслеживание состояний
     peerConnection.oniceconnectionstatechange = () => {
         const state = peerConnection.iceConnectionState;
-        connectionStatusEl.textContent = `ICE состояние: ${state}`;
+        connectionStatusEl.textContent = `ICE: ${state}`;
         console.log(`ICE состояние: ${state}`);
     };
     
-    peerConnection.onconnectionstatechange = () => {
-        console.log(`Состояние соединения: ${peerConnection.connectionState}`);
+    peerConnection.onsignalingstatechange = () => {
+        console.log(`Signaling состояние: ${peerConnection.signalingState}`);
     };
     
-    // Создаем оффер для нового соединения
-    await createOffer();
+    // Если мы инициатор, создаем оффер
+    if (isInitiator) {
+        setTimeout(() => {
+            createOffer();
+        }, 500);
+    }
+    
+    return peerConnection;
 }
 
-// Создание оффера
 async function createOffer() {
     try {
+        if (!peerConnection) {
+            console.error('❌ peerConnection не создан');
+            return;
+        }
+        
+        console.log('📤 Создаю оффер...');
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
         
@@ -241,21 +251,24 @@ async function createOffer() {
             offer: offer,
             target: getOtherUsers()
         });
+        
+        console.log('✅ Оффер создан и отправлен');
     } catch (error) {
-        console.error('Ошибка создания оффера:', error);
+        console.error('❌ Ошибка создания оффера:', error);
     }
 }
 
-// Обработка входящего оффера
 async function handleOffer(data) {
     console.log('📨 Получен оффер от:', data.from);
     
     if (!peerConnection) {
-        await createPeerConnection();
+        await createPeerConnection(false);
     }
     
     try {
         await peerConnection.setRemoteDescription(data.offer);
+        console.log('✅ Remote description (offer) установлен');
+        
         const answer = await peerConnection.createAnswer();
         await peerConnection.setLocalDescription(answer);
         
@@ -264,27 +277,25 @@ async function handleOffer(data) {
             target: data.from
         });
         
-        console.log('📤 Отправлен ответ на оффер');
+        console.log('📤 Ответ отправлен');
     } catch (error) {
         console.error('❌ Ошибка обработки оффера:', error);
     }
 }
 
-// Обработка входящего ответа
 async function handleAnswer(data) {
     console.log('📨 Получен ответ от:', data.from);
     
     try {
         if (peerConnection) {
             await peerConnection.setRemoteDescription(data.answer);
-            console.log('✅ Ответ установлен как remote description');
+            console.log('✅ Remote description (answer) установлен');
         }
     } catch (error) {
         console.error('❌ Ошибка обработки ответа:', error);
     }
 }
 
-// Обработка ICE кандидата
 async function handleIceCandidate(data) {
     try {
         if (peerConnection && data.candidate) {
@@ -296,15 +307,50 @@ async function handleIceCandidate(data) {
     }
 }
 
+// ==================== УПРАВЛЕНИЕ КОМНАТАМИ ====================
 
-// Получение других пользователей в комнате
-function getOtherUsers() {
-    // В реальном приложении здесь была бы логика получения списка пользователей
-    // Пока просто broadcast всем в комнате
-    return currentRoom;
+async function createRoom() {
+    const roomId = Math.random().toString(36).substring(2, 8);
+    roomInput.value = roomId;
+    
+    if (!localStream) {
+        await initMediaStream();
+    }
+    
+    socket.emit('create-room', roomId);
 }
 
-// Управление видео/аудио
+async function joinRoom() {
+    const roomId = roomInput.value.trim();
+    if (roomId) {
+        if (!localStream) {
+            await initMediaStream();
+        }
+        
+        socket.emit('join-room', roomId);
+    } else {
+        alert('Введите ID комнаты');
+    }
+}
+
+function leaveRoom() {
+    if (currentRoom) {
+        socket.emit('leave-room', currentRoom);
+        currentRoom = null;
+        roomStatusEl.textContent = 'Нет';
+        leaveBtn.disabled = true;
+        updateStatus('Покинули комнату', 'disconnected');
+        
+        if (peerConnection) {
+            peerConnection.close();
+            peerConnection = null;
+        }
+        remoteVideo.srcObject = null;
+    }
+}
+
+// ==================== УПРАВЛЕНИЕ МЕДИА ====================
+
 function toggleVideo() {
     if (localStream && localStream.getVideoTracks().length > 0) {
         const videoTrack = localStream.getVideoTracks()[0];
@@ -327,107 +373,83 @@ function toggleAudio() {
     }
 }
 
-// Обновление статуса
-function updateStatus(message, type) {
-    statusEl.textContent = message;
-    statusEl.className = type;
-    console.log(`Status: ${message}`);
-}
+// ==================== ТЕСТ МИКРОФОНА ====================
 
-async function testMicrophoneOnly() {
-    try {
-        console.log('🎤 Тестирую только микрофон...');
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        console.log('✅ Микрофон работает!');
-        
-        // Останавливаем поток
-        stream.getTracks().forEach(track => track.stop());
-    } catch (error) {
-        console.error('❌ Ошибка микрофона:', error);
-        updateStatus(`Ошибка микрофона: ${error.message}`, 'disconnected');
-    }
-}
-
-async function requestMediaPermissions() {
-    try {
-        // Проверяем доступность API
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            updateStatus('Ваш браузер не поддерживает доступ к медиаустройствам', 'disconnected');
-            return;
-        }
-        
-        // Запрашиваем только аудио для теста
-        const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioStream.getTracks().forEach(track => track.stop());
-        
-        updateStatus('Доступ к микрофону разрешен. Теперь запрашиваем видео...', 'connected');
-        
-        // Теперь запрашиваем полный доступ
-        await initMediaStream();
-        
-    } catch (error) {
-        console.error('Ошибка разрешения:', error);
-        updateStatus('Разрешите доступ к микрофону в настройках браузера', 'disconnected');
-    }
-}
-
-async function testMicrophoneWithEcho() {
-    const testMicBtn = document.getElementById('voiceTestNew');
-    
+async function testMicrophoneWithVisualizer() {
     if (!isTestingMic) {
-        // Включаем тест
         try {
-            console.log('🎤 Включаю тест микрофона с эхом...');
-            
-            // Получаем доступ к микрофону
             testStream = await navigator.mediaDevices.getUserMedia({ 
-                audio: {
-                    echoCancellation: false, // Отключаем для чистого эха
-                    noiseSuppression: false,
-                    autoGainControl: false,
-                    sampleRate: 44100,
-                    channelCount: 1
-                }, 
+                audio: true, 
                 video: false 
             });
             
-            // Создаем элемент audio для воспроизведения
-            if (!echoAudio) {
-                echoAudio = document.getElementById('echoAudio');
-            }
+            // Показываем панель визуализации
+            document.getElementById('micTestPanel').style.display = 'block';
             
-            // Подключаем поток к audio элементу
+            // Создаем AudioContext для анализа звука
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            microphone = audioContext.createMediaStreamSource(testStream);
+            javascriptNode = audioContext.createScriptProcessor(2048, 1, 1);
+            
+            analyser.smoothingTimeConstant = 0.8;
+            analyser.fftSize = 1024;
+            
+            microphone.connect(analyser);
+            analyser.connect(javascriptNode);
+            javascriptNode.connect(audioContext.destination);
+            
+            // Анализируем уровень звука
+            javascriptNode.onaudioprocess = function() {
+                const array = new Uint8Array(analyser.frequencyBinCount);
+                analyser.getByteFrequencyData(array);
+                
+                let values = 0;
+                for (let i = 0; i < array.length; i++) {
+                    values += array[i];
+                }
+                
+                const average = values / array.length;
+                const percentage = Math.min(100, (average / 256) * 100);
+                
+                document.getElementById('volumeLevel').style.width = percentage + '%';
+                
+                const volumeLevel = document.getElementById('volumeLevel');
+                if (percentage < 30) {
+                    volumeLevel.style.background = '#28a745';
+                } else if (percentage < 70) {
+                    volumeLevel.style.background = '#ffc107';
+                } else {
+                    volumeLevel.style.background = '#dc3545';
+                }
+            };
+            
+            // Воспроизводим эхо
+            echoAudio = document.getElementById('echoAudio');
             echoAudio.srcObject = testStream;
-            
-            // Включаем воспроизведение
             await echoAudio.play();
             
-            // Обновляем UI
             isTestingMic = true;
-            testMicBtn.innerHTML = '🔇 Выключить эхо';
-            testMicBtn.style.background = '#dc3545';
-            
-            updateStatus('Эхо включено - говорите в микрофон', 'connected');
-            console.log('✅ Эхо включено');
+            updateStatus('Тест микрофона активен - говорите и смотрите уровень', 'connected');
             
         } catch (error) {
-            console.error('❌ Ошибка включения эха:', error);
+            console.error('Ошибка:', error);
             updateStatus(`Ошибка: ${error.message}`, 'disconnected');
         }
-        
     } else {
-        // Выключаем тест
         stopMicrophoneTest();
     }
-};
+}
 
 function stopMicrophoneTest() {
     if (testStream) {
-        // Останавливаем все треки
-        testStream.getTracks().forEach(track => {
-            track.stop();
-        });
+        testStream.getTracks().forEach(track => track.stop());
         testStream = null;
+    }
+    
+    if (audioContext) {
+        audioContext.close();
+        audioContext = null;
     }
     
     if (echoAudio) {
@@ -435,15 +457,28 @@ function stopMicrophoneTest() {
         echoAudio.srcObject = null;
     }
     
-    // Обновляем UI
+    document.getElementById('micTestPanel').style.display = 'none';
     isTestingMic = false;
-    const testMicBtn = document.getElementById('voiceTestNew');
-    testMicBtn.innerHTML = '🎤 Тест микрофона (включить эхо)';
-    testMicBtn.style.background = '#28a745';
     
-    updateStatus('Эхо выключено', 'disconnected');
-    console.log('🔇 Эхо выключено');
+    updateStatus('Тест микрофона завершен', 'disconnected');
 }
 
-// Запуск при загрузке страницы
-window.onload = init;
+// ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+
+function getOtherUsers() {
+    return currentRoom;
+}
+
+function updateStatus(message, type) {
+    statusEl.textContent = message;
+    statusEl.className = type;
+    console.log(`Status: ${message}`);
+}
+
+// Сделаем функции глобальными для HTML onclick
+window.createRoom = createRoom;
+window.joinRoom = joinRoom;
+window.leaveRoom = leaveRoom;
+window.toggleVideo = toggleVideo;
+window.toggleAudio = toggleAudio;
+window.stopMicrophoneTest = stopMicrophoneTest;
