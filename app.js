@@ -38,6 +38,11 @@ const configuration = {
 async function init() {
     await initMediaStream();
     initSocket();
+
+    const testMicBtn = document.getElementById('voiceTestNew');
+    if (testMicBtn) {
+        testMicBtn.addEventListener('click', voiceTestNew);
+    }    
 }
 
 // Инициализация медиапотока
