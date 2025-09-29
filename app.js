@@ -79,7 +79,7 @@ async function initMediaStream() {
         console.log('🔄 Запрашиваю доступ к медиаустройствам...');
 
         localStream = await navigator.mediaDevices.getUserMedia({
-            video: false,
+            video: true,
             audio: {
                 echoCancellation: true,
                 noiseSuppression: true,
