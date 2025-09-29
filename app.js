@@ -283,6 +283,25 @@ function updateStatus(message, type) {
     console.log(`Status: ${message}`);
 }
 
+async function testMicrophoneOnly() {
+    try {
+        console.log('🎤 Тестирую только микрофон...');
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        console.log('✅ Микрофон работает!');
+        updateStatus('Микрофон работает! Теперь запрашиваю камеру...', 'connected');
+        
+        // Останавливаем поток
+        stream.getTracks().forEach(track => track.stop());
+        
+        // Теперь запрашиваем полный доступ
+        await initMediaStream();
+        
+    } catch (error) {
+        console.error('❌ Ошибка микрофона:', error);
+        updateStatus(`Ошибка микрофона: ${error.message}`, 'disconnected');
+    }
+}
+
 async function requestMediaPermissions() {
     try {
         // Проверяем доступность API
