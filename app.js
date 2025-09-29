@@ -22,6 +22,10 @@ let currentRoom = null;
 let isVideoEnabled = true;
 let isAudioEnabled = true;
 
+let isTestingMic = false;
+let testStream = null;
+let echoAudio = null;
+
 // Конфигурация WebRTC
 const configuration = {
     iceServers: [
@@ -323,6 +327,80 @@ async function requestMediaPermissions() {
         console.error('Ошибка разрешения:', error);
         updateStatus('Разрешите доступ к микрофону в настройках браузера', 'disconnected');
     }
+}
+
+async function testMicrophoneWithEcho() {
+    const testMicBtn = document.getElementById('testMicBtn');
+    
+    if (!isTestingMic) {
+        // Включаем тест
+        try {
+            console.log('🎤 Включаю тест микрофона с эхом...');
+            
+            // Получаем доступ к микрофону
+            testStream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    echoCancellation: false, // Отключаем для чистого эха
+                    noiseSuppression: false,
+                    autoGainControl: false,
+                    sampleRate: 44100,
+                    channelCount: 1
+                }, 
+                video: false 
+            });
+            
+            // Создаем элемент audio для воспроизведения
+            if (!echoAudio) {
+                echoAudio = document.getElementById('echoAudio');
+            }
+            
+            // Подключаем поток к audio элементу
+            echoAudio.srcObject = testStream;
+            
+            // Включаем воспроизведение
+            await echoAudio.play();
+            
+            // Обновляем UI
+            isTestingMic = true;
+            testMicBtn.innerHTML = '🔇 Выключить эхо';
+            testMicBtn.style.background = '#dc3545';
+            
+            updateStatus('Эхо включено - говорите в микрофон', 'connected');
+            console.log('✅ Эхо включено');
+            
+        } catch (error) {
+            console.error('❌ Ошибка включения эха:', error);
+            updateStatus(`Ошибка: ${error.message}`, 'disconnected');
+        }
+        
+    } else {
+        // Выключаем тест
+        stopMicrophoneTest();
+    }
+};
+
+function stopMicrophoneTest() {
+    if (testStream) {
+        // Останавливаем все треки
+        testStream.getTracks().forEach(track => {
+            track.stop();
+        });
+        testStream = null;
+    }
+    
+    if (echoAudio) {
+        echoAudio.pause();
+        echoAudio.srcObject = null;
+    }
+    
+    // Обновляем UI
+    isTestingMic = false;
+    const testMicBtn = document.getElementById('testMicBtn');
+    testMicBtn.innerHTML = '🎤 Тест микрофона (включить эхо)';
+    testMicBtn.style.background = '#28a745';
+    
+    updateStatus('Эхо выключено', 'disconnected');
+    console.log('🔇 Эхо выключено');
 }
 
 // Запуск при загрузке страницы
