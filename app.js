@@ -59,11 +59,27 @@ async function initMediaStream() {
         console.log('🔄 Запрашиваю доступ к медиаустройствам...');
         
         localStream = await navigator.mediaDevices.getUserMedia({ 
-            video: true, 
-            audio: true 
+            video: false, 
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true, 
+                autoGainControl: true,
+                channelCount: 2,
+                sampleRate: 44100,
+                latency: 0.01
+            }
         });
         
         console.log('✅ Медиапоток получен');
+        console.log('🎤 Аудио треки:', localStream.getAudioTracks());
+        
+        // Проверяем аудио треки
+        const audioTracks = localStream.getAudioTracks();
+        if (audioTracks.length > 0) {
+            console.log('🔊 Аудио трек найден, enabled:', audioTracks[0].enabled);
+            audioTracks[0].enabled = true; // Принудительно включаем
+        }
+        
         localVideo.srcObject = localStream;
         updateStatus('Микрофон и камера подключены', 'connected');
         
@@ -196,9 +212,21 @@ async function createPeerConnection() {
     
     // Обработка входящего потока
     peerConnection.ontrack = (event) => {
-        console.log('📹 Получен удаленный поток');
+        console.log('📹 Получен удаленный поток:', event.streams[0]);
         remoteStream = event.streams[0];
         remoteVideo.srcObject = remoteStream;
+        
+        // Принудительно включаем звук на удаленном видео
+        remoteVideo.volume = 1.0;
+        remoteVideo.muted = false;
+        
+        // Проверяем аудио треки
+        const audioTracks = remoteStream.getAudioTracks();
+        console.log('🔊 Удаленные аудио треки:', audioTracks);
+        if (audioTracks.length > 0) {
+            audioTracks[0].enabled = true;
+        }
+        
         updateStatus('Установлено P2P соединение', 'connected');
     };
     
