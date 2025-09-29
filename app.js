@@ -43,15 +43,23 @@ async function init() {
 // Инициализация медиапотока
 async function initMediaStream() {
     try {
+        console.log('🔄 Запрашиваю доступ к медиаустройствам...');
+        
         localStream = await navigator.mediaDevices.getUserMedia({ 
             video: true, 
             audio: true 
         });
+        
+        console.log('✅ Медиапоток получен');
         localVideo.srcObject = localStream;
-        updateStatus('Медиаустройства подключены', 'connected');
+        updateStatus('Микрофон и камера подключены', 'connected');
+        
+        return localStream; // Возвращаем stream
+        
     } catch (error) {
-        console.error('Ошибка доступа к медиаустройствам:', error);
-        updateStatus('Ошибка доступа к камере/микрофону', 'disconnected');
+        console.error('❌ Ошибка доступа к медиаустройствам:', error);
+        updateStatus(`Ошибка: ${error.message}`, 'disconnected');
+        return null;
     }
 }
 
@@ -126,16 +134,27 @@ function initSocket() {
 }
 
 // Создание комнаты
-function createRoom() {
+async function createRoom() {
     const roomId = Math.random().toString(36).substring(2, 8);
     roomInput.value = roomId;
+    
+    // Сначала инициализируем медиапоток если его нет
+    if (!localStream) {
+        await initMediaStream();
+    }
+    
     socket.emit('create-room', roomId);
 }
 
 // Присоединение к комнате
-function joinRoom() {
+async function joinRoom() {
     const roomId = roomInput.value.trim();
     if (roomId) {
+        // Сначала инициализируем медиапоток если его нет
+        if (!localStream) {
+            await initMediaStream();
+        }
+        
         socket.emit('join-room', roomId);
     } else {
         alert('Введите ID комнаты');
@@ -160,20 +179,29 @@ function leaveRoom() {
 }
 
 // Создание Peer Connection
-function createPeerConnection() {
+async function createPeerConnection() {
     if (peerConnection) {
         return; // Уже создано
     }
     
+    // Убедимся что localStream существует
+    if (!localStream) {
+        console.log('🔄 localStream не найден, инициализирую...');
+        await initMediaStream();
+    }
+    
     peerConnection = new RTCPeerConnection(configuration);
     
-    // Добавляем локальные треки
-    localStream.getTracks().forEach(track => {
-        peerConnection.addTrack(track, localStream);
-    });
+    // Добавляем локальные треки (только если они есть)
+    if (localStream) {
+        localStream.getTracks().forEach(track => {
+            peerConnection.addTrack(track, localStream);
+        });
+    }
     
     // Обработка входящего потока
     peerConnection.ontrack = (event) => {
+        console.log('📹 Получен удаленный поток');
         remoteStream = event.streams[0];
         remoteVideo.srcObject = remoteStream;
         updateStatus('Установлено P2P соединение', 'connected');
@@ -181,7 +209,7 @@ function createPeerConnection() {
     
     // Обработка ICE кандидатов
     peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
+        if (event.candidate && currentRoom) {
             socket.emit('webrtc-ice-candidate', {
                 candidate: event.candidate,
                 target: getOtherUsers()
@@ -190,11 +218,17 @@ function createPeerConnection() {
     };
     
     peerConnection.oniceconnectionstatechange = () => {
-        connectionStatusEl.textContent = `ICE состояние: ${peerConnection.iceConnectionState}`;
+        const state = peerConnection.iceConnectionState;
+        connectionStatusEl.textContent = `ICE состояние: ${state}`;
+        console.log(`ICE состояние: ${state}`);
+    };
+    
+    peerConnection.onconnectionstatechange = () => {
+        console.log(`Состояние соединения: ${peerConnection.connectionState}`);
     };
     
     // Создаем оффер для нового соединения
-    createOffer();
+    await createOffer();
 }
 
 // Создание оффера
@@ -214,8 +248,10 @@ async function createOffer() {
 
 // Обработка входящего оффера
 async function handleOffer(data) {
+    console.log('📨 Получен оффер от:', data.from);
+    
     if (!peerConnection) {
-        createPeerConnection();
+        await createPeerConnection();
     }
     
     try {
@@ -227,28 +263,39 @@ async function handleOffer(data) {
             answer: answer,
             target: data.from
         });
+        
+        console.log('📤 Отправлен ответ на оффер');
     } catch (error) {
-        console.error('Ошибка обработки оффера:', error);
+        console.error('❌ Ошибка обработки оффера:', error);
     }
 }
 
 // Обработка входящего ответа
 async function handleAnswer(data) {
+    console.log('📨 Получен ответ от:', data.from);
+    
     try {
-        await peerConnection.setRemoteDescription(data.answer);
+        if (peerConnection) {
+            await peerConnection.setRemoteDescription(data.answer);
+            console.log('✅ Ответ установлен как remote description');
+        }
     } catch (error) {
-        console.error('Ошибка обработки ответа:', error);
+        console.error('❌ Ошибка обработки ответа:', error);
     }
 }
 
 // Обработка ICE кандидата
 async function handleIceCandidate(data) {
     try {
-        await peerConnection.addIceCandidate(data.candidate);
+        if (peerConnection && data.candidate) {
+            await peerConnection.addIceCandidate(data.candidate);
+            console.log('✅ ICE кандидат добавлен');
+        }
     } catch (error) {
-        console.error('Ошибка добавления ICE кандидата:', error);
+        console.error('❌ Ошибка добавления ICE кандидата:', error);
     }
 }
+
 
 // Получение других пользователей в комнате
 function getOtherUsers() {
@@ -259,7 +306,7 @@ function getOtherUsers() {
 
 // Управление видео/аудио
 function toggleVideo() {
-    if (localStream) {
+    if (localStream && localStream.getVideoTracks().length > 0) {
         const videoTrack = localStream.getVideoTracks()[0];
         if (videoTrack) {
             videoTrack.enabled = !videoTrack.enabled;
@@ -270,7 +317,7 @@ function toggleVideo() {
 }
 
 function toggleAudio() {
-    if (localStream) {
+    if (localStream && localStream.getAudioTracks().length > 0) {
         const audioTrack = localStream.getAudioTracks()[0];
         if (audioTrack) {
             audioTrack.enabled = !audioTrack.enabled;
