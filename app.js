@@ -8,6 +8,7 @@ let peers = {};
 let currentCall = null;
 let username = '';
 let pendingIncomingCall = null;
+let remoteAudio = null;
 
 // DOM elements
 const loginSection = document.getElementById('login-section');
@@ -146,6 +147,7 @@ function removeUser(userId) {
 
 async function startAudio() {
     try {
+        console.log('Requesting microphone access...');
         localStream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 echoCancellation: true,
@@ -155,15 +157,24 @@ async function startAudio() {
             video: false
         });
 
+        console.log('Microphone access granted');
+        console.log('Audio tracks:', localStream.getAudioTracks());
+
+        // Test local audio
+        const testAudio = document.createElement('audio');
+        testAudio.srcObject = localStream;
+        testAudio.volume = 0; // Mute local playback
+        testAudio.play().catch(e => console.log('Test audio play:', e));
+
         startAudioBtn.style.display = 'none';
         endCallBtn.style.display = 'inline-block';
         callStatusDiv.innerHTML = 'Audio started - Ready to call <span class="audio-indicator"></span>';
 
-        console.log('Audio stream obtained');
     } catch (error) {
         console.error('Error accessing microphone:', error);
-        alert('Error accessing microphone. Please check permissions.');
+        alert('Error accessing microphone. Please check permissions and try again.');
     }
+
 }
 
 function callUser(targetUserId) {
@@ -204,7 +215,12 @@ function createPeer(targetUserId, initiator = false) {
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:global.stun.twilio.com:3478' }
             ]
+        },
+        offerConstraints: {
+            offerToReceiveAudio: 1,
+            offerToReceiveVideo: 0
         }
+
     });
 
     peer.on('signal', (data) => {
@@ -219,15 +235,48 @@ function createPeer(targetUserId, initiator = false) {
     });
 
     peer.on('stream', (remoteStream) => {
-        console.log('Received remote stream');
+        console.log('✅ Received remote stream!', remoteStream);
+        console.log('Remote audio tracks:', remoteStream.getAudioTracks());
+
+        // Remove existing remote audio if any
+        if (remoteAudio) {
+            remoteAudio.remove();
+        }
+
         // Create audio element for remote stream
-        const audio = document.createElement('audio');
-        audio.srcObject = remoteStream;
-        audio.autoplay = true;
-        audio.controls = false;
-        audio.style.display = 'none';
-        document.body.appendChild(audio);
+        remoteAudio = document.createElement('audio');
+        remoteAudio.id = 'remote-audio';
+        remoteAudio.srcObject = remoteStream;
+        remoteAudio.autoplay = true;
+        remoteAudio.controls = false;
+        remoteAudio.style.display = 'none';
+
+        // Add event listeners for audio element
+        remoteAudio.onloadedmetadata = () => {
+            console.log('Remote audio metadata loaded');
+            remoteAudio.play().catch(e => console.error('Remote audio play error:', e));
+        };
+
+        remoteAudio.oncanplay = () => {
+            console.log('Remote audio can play');
+        };
+
+        remoteAudio.onplay = () => {
+            console.log('✅ Remote audio started playing!');
+        };
+
+        document.body.appendChild(remoteAudio);
+
+        // Try to play immediately with user gesture
+        setTimeout(() => {
+            remoteAudio.play().catch(e => {
+                console.error('Delayed play error:', e);
+                // If autoplay is blocked, add a play button
+                showAudioPlayButton();
+            });
+        }, 1000);
     });
+
 
     peer.on('connect', () => {
         console.log('Peer connected');
@@ -335,6 +384,11 @@ function resetCallUI() {
         localStream = null;
     }
 
+    if (remoteAudio) {
+        remoteAudio.remove();
+        remoteAudio = null;
+    }
+
     // Clean up all peers
     Object.keys(peers).forEach(peerId => {
         if (peers[peerId] && !peers[peerId].destroyed) {
@@ -345,6 +399,18 @@ function resetCallUI() {
 
     // Remove all audio elements
     document.querySelectorAll('audio').forEach(audio => audio.remove());
+}
+
+function showAudioPlayButton() {
+    const playButton = document.createElement('button');
+    playButton.textContent = 'Click to enable audio';
+    playButton.className = 'btn btn-primary';
+    playButton.style.margin = '10px';
+    playButton.onclick = () => {
+        remoteAudio.play().catch(e => console.error('Manual play error:', e));
+        playButton.remove();
+    };
+    document.body.appendChild(playButton);
 }
 
 // Cleanup on page unload
@@ -363,3 +429,4 @@ window.addEventListener('beforeunload', () => {
         localStream.getTracks().forEach(track => track.stop());
     }
 });
+
