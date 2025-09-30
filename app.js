@@ -8,6 +8,7 @@ let peers = {};
 let currentCall = null;
 let username = '';
 let isInitiator = false;
+let pendingIncomingCall = null;
 
 // DOM elements
 const loginSection = document.getElementById('login-section');
@@ -181,20 +182,15 @@ function callUser(targetUserId) {
     }
 
     currentCall = targetUserId;
-    isInitiator = true;
-
+    
     // Уведомляем сервер о звонке
     socket.emit('call-user', { target: targetUserId });
-
-    // Создаем peer с небольшой задержкой
-    setTimeout(() => {
-        createPeer(targetUserId, true);
-    }, 1000);
-
+    
     callStatusDiv.innerHTML = 'Calling...';
 }
 
 function createPeer(targetUserId, initiator = false) {
+    // Если peer уже существует, уничтожаем его
     if (peers[targetUserId]) {
         peers[targetUserId].destroy();
         delete peers[targetUserId];
@@ -203,7 +199,7 @@ function createPeer(targetUserId, initiator = false) {
     const peer = new SimplePeer({
         initiator: initiator,
         trickle: false,
-        stream: localStream,
+        stream: initiator ? localStream : null, // Только инициатор отправляет stream сразу
         config: {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
@@ -259,18 +255,15 @@ async function handleOffer(data) {
         return;
     }
 
-    if (!localStream) {
-        await startAudio();
-    }
+    // Сохраняем информацию о входящем звонке, но не создаем peer сразу
+    pendingIncomingCall = {
+        from: data.from,
+        fromName: data.fromName,
+        offer: data.offer
+    };
 
-    currentCall = data.from;
-    isInitiator = false;
-
-    // Создаем peer только если его еще нет
-    if (!peers[data.from]) {
-        const peer = createPeer(data.from, false);
-        peer.signal(data.offer);
-    }
+    // Показываем интерфейс принятия звонка
+    showIncomingCall(data.from, data.fromName);
 }
 
 function showIncomingCall(fromUserId, fromUserName) {
@@ -279,16 +272,35 @@ function showIncomingCall(fromUserId, fromUserName) {
     currentCall = fromUserId;
 }
 
-function acceptCall() {
+async function acceptCall() {
+    if (!pendingIncomingCall) return;
+
+    if (!localStream) {
+        await startAudio();
+    }
+
     incomingCallDiv.style.display = 'none';
     endCallBtn.style.display = 'inline-block';
     callStatusDiv.innerHTML = `In call <span class="audio-indicator"></span>`;
+    
+    currentCall = pendingIncomingCall.from;
+    
+    // Создаем peer и обрабатываем offer только после принятия звонка
+    const peer = createPeer(pendingIncomingCall.from, false);
+    peer.signal(pendingIncomingCall.offer);
+    
+    // Уведомляем вызывающего, что звонок принят
+    socket.emit('call-accepted', { target: pendingIncomingCall.from });
+    
+    pendingIncomingCall = null;
 }
 
 function rejectCall() {
-    socket.emit('reject-call', { target: currentCall });
-    incomingCallDiv.style.display = 'none';
-    currentCall = null;
+    if (pendingIncomingCall) {
+        socket.emit('reject-call', { target: pendingIncomingCall.from });
+        incomingCallDiv.style.display = 'none';
+        pendingIncomingCall = null;
+    }
 }
 
 function endCall() {
