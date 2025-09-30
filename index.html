@@ -11,51 +11,48 @@
 </head>
 <body>
     <div class="container">
-        <h1>🎥 P2P Video Chat</h1>
-        
-        <div class="controls">
-            <input type="text" id="roomInput" placeholder="Введите ID комнаты">
-            <button onclick="createRoom()">Создать комнату</button>
-            <button onclick="joinRoom()">Присоединиться</button>
-            <button onclick="leaveRoom()" disabled id="leaveBtn">Покинуть комнату</button>
-            <button onclick="toggleVideo()" id="videoBtn">Выключить видео</button>
-            <button onclick="toggleAudio()" id="audioBtn">Выключить audio</button>
-            <button id="testMicBtn">🎤 Тест микрофона</button>
+        <div class="header">
+            <h1>🎧 WebRTC Audio Chat</h1>
+            <p>Simple peer-to-peer audio communication</p>
         </div>
 
-        <div class="status">
-            Статус: <span id="status">Не подключен</span> | 
-            Комната: <span id="roomStatus">Нет</span> |
-            Пользователей: <span id="userCount">0</span>
+        <div id="status" class="status disconnected">
+            Disconnected from server
         </div>
 
-        <div id="micTestPanel" style="display: none; margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 5px;">
-            <div style="display: flex; align-items: center; gap: 10px;">
-                <div>Уровень звука:</div>
-                <div id="volumeMeter" style="width: 100px; height: 20px; background: #e9ecef; border-radius: 10px; overflow: hidden;">
-                    <div id="volumeLevel" style="height: 100%; background: #28a745; width: 0%; transition: width 0.1s;"></div>
-                </div>
-                <button onclick="stopMicrophoneTest()" style="background: #dc3545;">🔇 Выключить</button>
+        <div id="login-section" class="login-section">
+            <h2>Join Audio Chat</h2>
+            <p style="margin: 20px 0; color: #666;">Enter your name to start chatting</p>
+            <input type="text" id="username" class="login-input" placeholder="Your name" maxlength="20">
+            <button onclick="joinChat()" class="btn btn-primary">Join Chat</button>
+        </div>
+
+        <div id="chat-section" class="chat-section">
+            <div class="users-section">
+                <h2>Online Users <span id="users-count">(0)</span></h2>
+                <div id="users-container" class="users-grid"></div>
+            </div>
+
+            <div id="incoming-call" class="incoming-call">
+                <h3>📞 Incoming Call</h3>
+                <p>From: <span id="caller-name">Unknown</span></p>
+                <button onclick="acceptCall()" class="btn btn-success">Accept</button>
+                <button onclick="rejectCall()" class="btn btn-danger">Reject</button>
+            </div>
+
+            <div class="call-controls">
+                <div id="call-status" class="call-status"></div>
+                <button onclick="startAudio()" class="btn btn-primary" id="start-audio-btn">Start Audio</button>
+                <button onclick="endCall()" class="btn btn-danger" id="end-call-btn" style="display: none;">End Call</button>
             </div>
         </div>
-
-        <div class="video-container">
-            <div>
-                <h3>Ваше видео</h3>
-                <video id="localVideo" autoplay muted></video>
-            </div>
-            <div>
-                <h3>Удаленное видео</h3>
-                <video id="remoteVideo" autoplay></video>
-            </div>
-        </div>
-
-        <div id="connectionStatus"></div>
     </div>
 
-    <audio id="echoAudio" hidden></audio>
-
+    <!-- SimplePeer from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/simple-peer@9.11.1/simplepeer.min.js"></script>
+    <!-- Socket.io from CDN -->
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    
     <script src="app.js"></script>
 </body>
 </html>

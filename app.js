@@ -1,524 +1,289 @@
 // Конфигурация
 const SERVER_URL = 'https://webrtc-signaling-server-production-f6b7.up.railway.app/';
 
-// Элементы DOM
-const localVideo = document.getElementById('localVideo');
-const remoteVideo = document.getElementById('remoteVideo');
-const roomInput = document.getElementById('roomInput');
-const statusEl = document.getElementById('status');
-const roomStatusEl = document.getElementById('roomStatus');
-const userCountEl = document.getElementById('userCount');
-const leaveBtn = document.getElementById('leaveBtn');
-const videoBtn = document.getElementById('videoBtn');
-const audioBtn = document.getElementById('audioBtn');
-const connectionStatusEl = document.getElementById('connectionStatus');
+// Global variables
+let socket = null;
+let localStream = null;
+let peers = {};
+let currentCall = null;
+let username = '';
 
-// Глобальные переменные
-let socket;
-let localStream;
-let remoteStream;
-let peerConnection;
-let currentRoom = null;
-let isVideoEnabled = true;
-let isAudioEnabled = true;
-let isOfferer = false;
+// DOM elements
+const loginSection = document.getElementById('login-section');
+const chatSection = document.getElementById('chat-section');
+const statusDiv = document.getElementById('status');
+const usersContainer = document.getElementById('users-container');
+const usersCount = document.getElementById('users-count');
+const incomingCallDiv = document.getElementById('incoming-call');
+const callerNameSpan = document.getElementById('caller-name');
+const callStatusDiv = document.getElementById('call-status');
+const startAudioBtn = document.getElementById('start-audio-btn');
+const endCallBtn = document.getElementById('end-call-btn');
 
-// Переменные для теста микрофона
-let isTestingMic = false;
-let testStream = null;
-let echoAudio = null;
-
-// Конфигурация WebRTC
-const configuration = {
-    iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-        },
-        {
-            urls: 'turn:openrelay.metered.ca:443',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-        },
-        {
-            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-        }
-    ],
-    iceCandidatePoolSize: 10,
-    bundlePolicy: 'max-bundle',
-    rtcpMuxPolicy: 'require'
-};
-
-
-// ==================== ИНИЦИАЛИЗАЦИЯ ====================
-
-document.addEventListener('DOMContentLoaded', function () {
-    const testMicBtn = document.getElementById('testMicBtn');
-    if (testMicBtn) {
-        testMicBtn.addEventListener('click', testMicrophoneWithVisualizer);
+function joinChat() {
+    username = document.getElementById('username').value.trim();
+    if (!username) {
+        alert('Please enter your name');
+        return;
     }
 
-    init();
-});
-
-async function init() {
-    await initMediaStream();
-    initSocket();
+    connectToServer();
 }
 
-// ==================== МЕДИА ПОТОК ====================
-
-async function initMediaStream() {
-    try {
-        console.log('🔄 Запрашиваю доступ к медиаустройствам...');
-
-        localStream = await navigator.mediaDevices.getUserMedia({
-            video: true,
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-                channelCount: 2,
-                sampleRate: 44100,
-                latency: 0.01
-            }
-        });
-
-        console.log('✅ Медиапоток получен');
-        console.log('🎤 Аудио треки:', localStream.getAudioTracks());
-
-        // Проверяем аудио треки
-        const audioTracks = localStream.getAudioTracks();
-        if (audioTracks.length > 0) {
-            console.log('🔊 Аудио трек найден, enabled:', audioTracks[0].enabled);
-            audioTracks[0].enabled = true; // Принудительно включаем
-        }
-
-        localVideo.srcObject = localStream;
-        updateStatus('Микрофон и камера подключены', 'connected');
-
-        return localStream;
-
-    } catch (error) {
-        console.error('❌ Ошибка доступа к медиаустройствам:', error);
-
-        let errorMessage = 'Неизвестная ошибка';
-        switch (error.name) {
-            case 'NotAllowedError':
-                errorMessage = 'Доступ к камере/микрофону запрещен. Нажмите на значок 🔒 слева от адреса и разрешите доступ';
-                break;
-            case 'NotFoundError':
-                errorMessage = 'Камера или микрофон не найдены';
-                break;
-            case 'NotReadableError':
-                errorMessage = 'Камера или микрофон уже используются другим приложением';
-                break;
-            default:
-                errorMessage = `Ошибка: ${error.message}`;
-        }
-
-        updateStatus(errorMessage, 'disconnected');
-        return null;
-    }
-}
-
-// ==================== SOCKET.IO ====================
-
-function initSocket() {
+function connectToServer() {
     socket = io(SERVER_URL);
 
     socket.on('connect', () => {
-        updateStatus('Подключен к серверу', 'connected');
+        updateStatus('Connected to server', 'connected');
+        socket.emit('register', { name: username });
     });
 
-    socket.on('disconnect', () => {
-        updateStatus('Отключен от сервера', 'disconnected');
+    socket.on('registered', (data) => {
+        console.log('Registered with ID:', data.id);
+        showChatSection();
+        updateUsersList(data.users);
     });
 
-    socket.on('room-created', (roomId) => {
-        currentRoom = roomId;
-        roomStatusEl.textContent = roomId;
-        updateStatus(`Комната создана: ${roomId}`, 'connected');
-        leaveBtn.disabled = false;
-        isOfferer = true; // Создатель комнаты будет офферером
+    socket.on('users-list', (users) => {
+        updateUsersList(users);
     });
 
-    socket.on('room-joined', (data) => {
-        currentRoom = data.roomId;
-        roomStatusEl.textContent = data.roomId;
-        updateStatus(`Присоединились к комнате: ${data.roomId}`, 'connected');
-        leaveBtn.disabled = false;
-        isOfferer = false; // Присоединившийся будет ансвером
+    socket.on('user-joined', (user) => {
+        addUser(user);
     });
 
-    socket.on('room-not-found', (roomId) => {
-        updateStatus(`Комната ${roomId} не найдена`, 'disconnected');
-    });
-
-    socket.on('user-joined', async (data) => {
-        console.log(`👤 Пользователь присоединился: ${data.userId}`);
-        updateStatus(`Пользователь присоединился: ${data.userId}`, 'connected');
-
-        // Если мы создатель комнаты, инициируем соединение
-        if (isOfferer) {
-            await createPeerConnection();
-            await createOffer();
+    socket.on('user-left', (user) => {
+        removeUser(user.id);
+        if (peers[user.id]) {
+            peers[user.id].destroy();
+            delete peers[user.id];
         }
     });
 
-    socket.on('user-left', (userId) => {
-        console.log(`👤 Пользователь покинул: ${userId}`);
-        updateStatus(`Пользователь покинул: ${userId}`, 'connected');
-
-        if (peerConnection) {
-            peerConnection.close();
-            peerConnection = null;
-        }
-        remoteVideo.srcObject = null;
-    });
-
-    // WebRTC события
-    socket.on('webrtc-offer', async (data) => {
-        console.log('📨 Получен оффер от:', data.from);
+    socket.on('offer', async (data) => {
+        console.log('Received offer from:', data.from);
         await handleOffer(data);
     });
 
-    socket.on('webrtc-answer', async (data) => {
-        console.log('📨 Получен ответ от:', data.from);
-        await handleAnswer(data);
+    socket.on('answer', (data) => {
+        console.log('Received answer from:', data.from);
+        if (peers[data.from]) {
+            peers[data.from].signal(data.answer);
+        }
     });
 
-    socket.on('webrtc-ice-candidate', async (data) => {
-        console.log('📨 Получен ICE кандидат от:', data.from);
-        await handleIceCandidate(data);
+    socket.on('ice-candidate', (data) => {
+        if (peers[data.from]) {
+            peers[data.from].signal(data.candidate);
+        }
     });
 
-    // Статистика
-    socket.on('stats-update', (data) => {
-        userCountEl.textContent = data.users;
+    socket.on('incoming-call', (data) => {
+        showIncomingCall(data.from, data.fromName);
     });
-}
 
-// ==================== WEBRTC - ПЕРЕПИСАННАЯ ЛОГИКА ====================
+    socket.on('call-rejected', (data) => {
+        alert('Call was rejected');
+        resetCallUI();
+    });
 
-async function createPeerConnection() {
-    // Закрываем существующее соединение
-    if (peerConnection) {
-        peerConnection.close();
-        peerConnection = null;
-    }
-
-    // Убедимся что localStream существует
-    if (!localStream) {
-        console.log('🔄 localStream не найден, инициализирую...');
-        await initMediaStream();
-    }
-
-    console.log('🔄 Создаю peer connection...');
-    peerConnection = new RTCPeerConnection(configuration);
-
-    // Добавляем локальные треки
-    if (localStream) {
-        localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
-        });
-    }
-
-    // Обработка входящего потока
-    peerConnection.ontrack = (event) => {
-        console.log('📹 Получен удаленный поток:', event.streams[0]);
-        remoteStream = event.streams[0];
-        remoteVideo.srcObject = remoteStream;
-
-        // Принудительно включаем звук на удаленном видео
-        remoteVideo.volume = 1.0;
-        remoteVideo.muted = false;
-
-        // Проверяем аудио треки
-        const audioTracks = remoteStream.getAudioTracks();
-        console.log('🔊 Удаленные аудио треки:', audioTracks);
-        if (audioTracks.length > 0) {
-            audioTracks[0].enabled = true;
+    socket.on('call-ended', (data) => {
+        alert('Call ended');
+        resetCallUI();
+        if (peers[data.from]) {
+            peers[data.from].destroy();
+            delete peers[data.from];
         }
+    });
 
-        updateStatus('Установлено P2P соединение', 'connected');
-    };
-
-    // Обработка ICE кандидатов
-    peerConnection.onicecandidate = (event) => {
-        if (event.candidate && currentRoom) {
-            console.log('📤 Отправляю ICE кандидат');
-            socket.emit('webrtc-ice-candidate', {
-                candidate: event.candidate,
-                target: getOtherUsers()
-            });
-        }
-    };
-
-    // Отслеживание состояний
-    peerConnection.oniceconnectionstatechange = () => {
-        const state = peerConnection.iceConnectionState;
-        connectionStatusEl.textContent = `ICE: ${state}`;
-        console.log(`ICE состояние: ${state}`);
-
-        if (state === 'connected' || state === 'completed') {
-            updateStatus('P2P соединение установлено', 'connected');
-        } else if (state === 'failed' || state === 'disconnected') {
-            console.error('❌ ICE соединение разорвано');
-            updateStatus('Проблемы с соединением', 'disconnected');
-            // Попробуем пересоздать соединение
-            setTimeout(() => {
-                if (currentRoom && peerConnection) {
-                    console.log('🔄 Пересоздаю соединение...');
-                    createPeerConnection().then(() => {
-                        if (isOfferer) {
-                            createOffer();
-                        }
-                    });
-                }
-            }, 2000);
-        }
-    };
-
-
-    peerConnection.onsignalingstatechange = () => {
-        console.log(`Signaling состояние: ${peerConnection.signalingState}`);
-    };
-
-    peerConnection.onconnectionstatechange = () => {
-        console.log(`Connection состояние: ${peerConnection.connectionState}`);
-    };
-
-    return peerConnection;
-}
-
-async function createOffer() {
-    try {
-        if (!peerConnection) {
-            await createPeerConnection();
-        }
-
-        console.log('📤 Создаю оффер...');
-        const offer = await peerConnection.createOffer({
-            offerToReceiveAudio: true,
-            offerToReceiveVideo: true
-        });
-
-        console.log('✅ Оффер создан, устанавливаю local description');
-        await peerConnection.setLocalDescription(offer);
-
-        console.log('📤 Отправляю оффер...');
-        socket.emit('webrtc-offer', {
-            offer: offer,
-            target: getOtherUsers()
-        });
-
-    } catch (error) {
-        console.error('❌ Ошибка создания оффера:', error);
-    }
-}
-
-async function handleOffer(data) {
-    try {
-        console.log('🔄 Обрабатываю оффер...');
-
-        if (!peerConnection) {
-            await createPeerConnection();
-        }
-
-        // Проверяем текущее состояние
-        if (peerConnection.signalingState !== 'stable') {
-            console.log('⚠️ Signaling state не stable, жду...');
-            setTimeout(() => handleOffer(data), 1000);
-            return;
-        }
-
-        console.log('✅ Устанавливаю remote description (offer)...');
-        await peerConnection.setRemoteDescription(data.offer);
-
-        console.log('📤 Создаю ответ...');
-        const answer = await peerConnection.createAnswer();
-
-        console.log('✅ Устанавливаю local description (answer)...');
-        await peerConnection.setLocalDescription(answer);
-
-        console.log('📤 Отправляю ответ...');
-        socket.emit('webrtc-answer', {
-            answer: answer,
-            target: data.from
-        });
-
-    } catch (error) {
-        console.error('❌ Ошибка обработки оффера:', error);
-    }
-}
-
-async function handleAnswer(data) {
-    try {
-        if (!peerConnection) {
-            console.error('❌ Peer connection не существует');
-            return;
-        }
-
-        // Проверяем что мы в состоянии 'have-local-offer'
-        if (peerConnection.signalingState !== 'have-local-offer') {
-            console.log('⚠️ Неправильное состояние для answer:', peerConnection.signalingState);
-            return;
-        }
-
-        console.log('✅ Устанавливаю remote description (answer)...');
-        await peerConnection.setRemoteDescription(data.answer);
-
-    } catch (error) {
-        console.error('❌ Ошибка обработки ответа:', error);
-    }
-}
-
-async function handleIceCandidate(data) {
-    try {
-        if (peerConnection && data.candidate) {
-            console.log('✅ Добавляю ICE кандидат...');
-            await peerConnection.addIceCandidate(data.candidate);
-        }
-    } catch (error) {
-        console.error('❌ Ошибка добавления ICE кандидата:', error);
-    }
-}
-
-// ==================== УПРАВЛЕНИЕ КОМНАТАМИ ====================
-
-async function createRoom() {
-    const roomId = Math.random().toString(36).substring(2, 8);
-    roomInput.value = roomId;
-
-    if (!localStream) {
-        await initMediaStream();
-    }
-
-    socket.emit('create-room', roomId);
-}
-
-async function joinRoom() {
-    const roomId = roomInput.value.trim();
-    if (roomId) {
-        if (!localStream) {
-            await initMediaStream();
-        }
-
-        socket.emit('join-room', roomId);
-    } else {
-        alert('Введите ID комнаты');
-    }
-}
-
-function leaveRoom() {
-    if (currentRoom) {
-        socket.emit('leave-room', currentRoom);
-        currentRoom = null;
-        roomStatusEl.textContent = 'Нет';
-        leaveBtn.disabled = true;
-        updateStatus('Покинули комнату', 'disconnected');
-
-        if (peerConnection) {
-            peerConnection.close();
-            peerConnection = null;
-        }
-        remoteVideo.srcObject = null;
-    }
-}
-
-// ==================== УПРАВЛЕНИЕ МЕДИА ====================
-
-function toggleVideo() {
-    if (localStream && localStream.getVideoTracks().length > 0) {
-        const videoTrack = localStream.getVideoTracks()[0];
-        if (videoTrack) {
-            videoTrack.enabled = !videoTrack.enabled;
-            isVideoEnabled = videoTrack.enabled;
-            videoBtn.textContent = isVideoEnabled ? 'Выключить видео' : 'Включить видео';
-        }
-    }
-}
-
-function toggleAudio() {
-    if (localStream && localStream.getAudioTracks().length > 0) {
-        const audioTrack = localStream.getAudioTracks()[0];
-        if (audioTrack) {
-            audioTrack.enabled = !audioTrack.enabled;
-            isAudioEnabled = audioTrack.enabled;
-            audioBtn.textContent = isAudioEnabled ? 'Выключить audio' : 'Включить audio';
-        }
-    }
-}
-
-// ==================== ТЕСТ МИКРОФОНА ====================
-
-async function testMicrophoneWithVisualizer() {
-    if (!isTestingMic) {
-        try {
-            testStream = await navigator.mediaDevices.getUserMedia({
-                audio: true,
-                video: false
-            });
-
-            // Воспроизводим эхо
-            echoAudio = document.getElementById('echoAudio');
-            echoAudio.srcObject = testStream;
-            await echoAudio.play();
-
-            isTestingMic = true;
-            document.getElementById('testMicBtn').textContent = '🔇 Выключить эхо';
-            document.getElementById('testMicBtn').style.background = '#dc3545';
-            updateStatus('Эхо включено - говорите в микрофон', 'connected');
-
-        } catch (error) {
-            console.error('Ошибка:', error);
-            updateStatus(`Ошибка: ${error.message}`, 'disconnected');
-        }
-    } else {
-        stopMicrophoneTest();
-    }
-}
-
-function stopMicrophoneTest() {
-    if (testStream) {
-        testStream.getTracks().forEach(track => track.stop());
-        testStream = null;
-    }
-
-    if (echoAudio) {
-        echoAudio.pause();
-        echoAudio.srcObject = null;
-    }
-
-    isTestingMic = false;
-    document.getElementById('testMicBtn').textContent = '🎤 Тест микрофона';
-    document.getElementById('testMicBtn').style.background = '#28a745';
-    updateStatus('Эхо выключено', 'disconnected');
-}
-
-// ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
-
-function getOtherUsers() {
-    return currentRoom;
+    socket.on('disconnect', () => {
+        updateStatus('Disconnected from server', 'disconnected');
+    });
 }
 
 function updateStatus(message, type) {
-    statusEl.textContent = message;
-    statusEl.className = type;
-    console.log(`Status: ${message}`);
+    statusDiv.textContent = message;
+    statusDiv.className = `status ${type}`;
 }
 
-// Сделаем функции глобальными для HTML onclick
-window.createRoom = createRoom;
-window.joinRoom = joinRoom;
-window.leaveRoom = leaveRoom;
-window.toggleVideo = toggleVideo;
-window.toggleAudio = toggleAudio;
-window.stopMicrophoneTest = stopMicrophoneTest;
+function showChatSection() {
+    loginSection.style.display = 'none';
+    chatSection.style.display = 'block';
+}
+
+function updateUsersList(users) {
+    usersContainer.innerHTML = '';
+    users.forEach(user => addUser(user));
+    // Add self user
+    addUser({ id: socket.id, name: username + ' (You)' }, true);
+    usersCount.textContent = `(${users.length + 1})`;
+}
+
+function addUser(user, isSelf = false) {
+    const userCard = document.createElement('div');
+    userCard.className = `user-card ${isSelf ? 'self' : ''}`;
+    userCard.id = `user-${user.id}`;
+    userCard.innerHTML = `
+                <h3>${user.name}</h3>
+                ${!isSelf ? `<button onclick="callUser('${user.id}')" class="btn btn-success">Call</button>` : ''}
+            `;
+    usersContainer.appendChild(userCard);
+}
+
+function removeUser(userId) {
+    const userElement = document.getElementById(`user-${userId}`);
+    if (userElement) {
+        userElement.remove();
+    }
+}
+
+async function startAudio() {
+    try {
+        localStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
+            video: false
+        });
+
+        startAudioBtn.style.display = 'none';
+        endCallBtn.style.display = 'inline-block';
+        callStatusDiv.innerHTML = 'Audio started <span class="audio-indicator"></span>';
+
+        console.log('Audio stream obtained');
+    } catch (error) {
+        console.error('Error accessing microphone:', error);
+        alert('Error accessing microphone. Please check permissions.');
+    }
+}
+
+function callUser(targetUserId) {
+    if (!localStream) {
+        alert('Please start audio first');
+        return;
+    }
+
+    currentCall = targetUserId;
+    createPeer(targetUserId, true);
+}
+
+function createPeer(targetUserId, initiator = false) {
+    const peer = new SimplePeer({
+        initiator: initiator,
+        trickle: false,
+        stream: localStream,
+        config: {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478' }
+            ]
+        }
+    });
+
+    peer.on('signal', (data) => {
+        if (data.type === 'offer') {
+            socket.emit('offer', { target: targetUserId, offer: data });
+        } else if (data.type === 'answer') {
+            socket.emit('answer', { target: targetUserId, answer: data });
+        } else if (data.candidate) {
+            socket.emit('ice-candidate', { target: targetUserId, candidate: data });
+        }
+    });
+
+    peer.on('stream', (remoteStream) => {
+        console.log('Received remote stream');
+        // Create audio element for remote stream
+        const audio = document.createElement('audio');
+        audio.srcObject = remoteStream;
+        audio.autoplay = true;
+        audio.controls = false;
+        document.body.appendChild(audio);
+    });
+
+    peer.on('connect', () => {
+        console.log('Peer connected');
+        callStatusDiv.innerHTML = `In call with user <span class="audio-indicator"></span>`;
+    });
+
+    peer.on('close', () => {
+        console.log('Peer connection closed');
+        resetCallUI();
+    });
+
+    peer.on('error', (err) => {
+        console.error('Peer error:', err);
+        resetCallUI();
+    });
+
+    peers[targetUserId] = peer;
+    return peer;
+}
+
+async function handleOffer(data) {
+    if (!localStream) {
+        await startAudio();
+    }
+
+    const peer = createPeer(data.from, false);
+    peer.signal(data.offer);
+}
+
+function showIncomingCall(fromUserId, fromUserName) {
+    callerNameSpan.textContent = fromUserName;
+    incomingCallDiv.style.display = 'block';
+    currentCall = fromUserId;
+}
+
+function acceptCall() {
+    incomingCallDiv.style.display = 'none';
+    endCallBtn.style.display = 'inline-block';
+    callStatusDiv.innerHTML = `In call <span class="audio-indicator"></span>`;
+}
+
+function rejectCall() {
+    socket.emit('reject-call', { target: currentCall });
+    incomingCallDiv.style.display = 'none';
+    currentCall = null;
+}
+
+function endCall() {
+    if (currentCall) {
+        socket.emit('end-call', { target: currentCall });
+
+        if (peers[currentCall]) {
+            peers[currentCall].destroy();
+            delete peers[currentCall];
+        }
+    }
+
+    resetCallUI();
+
+    // Stop local stream
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+    }
+}
+
+function resetCallUI() {
+    currentCall = null;
+    startAudioBtn.style.display = 'inline-block';
+    endCallBtn.style.display = 'none';
+    callStatusDiv.textContent = '';
+    incomingCallDiv.style.display = 'none';
+}
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+    if (socket) {
+        socket.disconnect();
+    }
+
+    Object.values(peers).forEach(peer => peer.destroy());
+
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+    }
+});
