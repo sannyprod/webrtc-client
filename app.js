@@ -7,6 +7,7 @@ let localStream = null;
 let peers = {};
 let currentCall = null;
 let username = '';
+let isInitiator = false;
 
 // DOM elements
 const loginSection = document.getElementById('login-section');
@@ -67,34 +68,43 @@ function connectToServer() {
 
     socket.on('answer', (data) => {
         console.log('Received answer from:', data.from);
-        if (peers[data.from]) {
-            peers[data.from].signal(data.answer);
-        }
+        handleAnswer(data);
     });
 
     socket.on('ice-candidate', (data) => {
-        if (peers[data.from]) {
-            peers[data.from].signal(data.candidate);
+        if (peers[data.from] && !peers[data.from].destroyed) {
+            try {
+                peers[data.from].signal(data.candidate);
+            } catch (error) {
+                console.error('Error processing ICE candidate:', error);
+            }
         }
     });
+
 
     socket.on('incoming-call', (data) => {
         showIncomingCall(data.from, data.fromName);
     });
 
-    socket.on('call-rejected', (data) => {
-        alert('Call was rejected');
-        resetCallUI();
-    });
-
     socket.on('call-ended', (data) => {
-        alert('Call ended');
-        resetCallUI();
+        console.log('Call ended by remote user');
         if (peers[data.from]) {
             peers[data.from].destroy();
             delete peers[data.from];
         }
+        resetCallUI();
     });
+
+    socket.on('call-rejected', (data) => {
+        console.log('Call was rejected');
+        if (peers[data.from]) {
+            peers[data.from].destroy();
+            delete peers[data.from];
+        }
+        resetCallUI();
+        alert('Call was rejected');
+    });
+
 
     socket.on('disconnect', () => {
         updateStatus('Disconnected from server', 'disconnected');
@@ -160,16 +170,36 @@ async function startAudio() {
 }
 
 function callUser(targetUserId) {
+    if (currentCall) {
+        alert('You are already in a call');
+        return;
+    }
+
     if (!localStream) {
         alert('Please start audio first');
         return;
     }
 
     currentCall = targetUserId;
-    createPeer(targetUserId, true);
+    isInitiator = true;
+
+    // Уведомляем сервер о звонке
+    socket.emit('call-user', { target: targetUserId });
+
+    // Создаем peer с небольшой задержкой
+    setTimeout(() => {
+        createPeer(targetUserId, true);
+    }, 1000);
+
+    callStatusDiv.innerHTML = 'Calling...';
 }
 
 function createPeer(targetUserId, initiator = false) {
+    if (peers[targetUserId]) {
+        peers[targetUserId].destroy();
+        delete peers[targetUserId];
+    }
+
     const peer = new SimplePeer({
         initiator: initiator,
         trickle: false,
@@ -183,6 +213,7 @@ function createPeer(targetUserId, initiator = false) {
     });
 
     peer.on('signal', (data) => {
+        console.log('Signal data:', data.type);
         if (data.type === 'offer') {
             socket.emit('offer', { target: targetUserId, offer: data });
         } else if (data.type === 'answer') {
@@ -222,12 +253,24 @@ function createPeer(targetUserId, initiator = false) {
 }
 
 async function handleOffer(data) {
+    if (currentCall) {
+        console.log('Already in call, rejecting incoming call');
+        socket.emit('reject-call', { target: data.from });
+        return;
+    }
+
     if (!localStream) {
         await startAudio();
     }
 
-    const peer = createPeer(data.from, false);
-    peer.signal(data.offer);
+    currentCall = data.from;
+    isInitiator = false;
+
+    // Создаем peer только если его еще нет
+    if (!peers[data.from]) {
+        const peer = createPeer(data.from, false);
+        peer.signal(data.offer);
+    }
 }
 
 function showIncomingCall(fromUserId, fromUserName) {
@@ -265,10 +308,19 @@ function endCall() {
         localStream.getTracks().forEach(track => track.stop());
         localStream = null;
     }
+
+    // Сбрасываем все peers
+    Object.keys(peers).forEach(peerId => {
+        if (peers[peerId]) {
+            peers[peerId].destroy();
+        }
+    });
+    peers = {};
 }
 
 function resetCallUI() {
     currentCall = null;
+    isInitiator = false;
     startAudioBtn.style.display = 'inline-block';
     endCallBtn.style.display = 'none';
     callStatusDiv.textContent = '';
