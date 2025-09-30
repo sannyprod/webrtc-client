@@ -7,7 +7,6 @@ let localStream = null;
 let peers = {};
 let currentCall = null;
 let username = '';
-let isInitiator = false;
 let pendingIncomingCall = null;
 
 // DOM elements
@@ -82,30 +81,27 @@ function connectToServer() {
         }
     });
 
-
     socket.on('incoming-call', (data) => {
+        console.log('Incoming call from:', data.from);
         showIncomingCall(data.from, data.fromName);
     });
 
-    socket.on('call-ended', (data) => {
-        console.log('Call ended by remote user');
-        if (peers[data.from]) {
-            peers[data.from].destroy();
-            delete peers[data.from];
-        }
-        resetCallUI();
+    socket.on('call-accepted', (data) => {
+        console.log('Call accepted by:', data.from);
+        callStatusDiv.innerHTML = `Call connected <span class="audio-indicator"></span>`;
     });
 
     socket.on('call-rejected', (data) => {
         console.log('Call was rejected');
-        if (peers[data.from]) {
-            peers[data.from].destroy();
-            delete peers[data.from];
-        }
         resetCallUI();
         alert('Call was rejected');
     });
 
+    socket.on('call-ended', (data) => {
+        console.log('Call ended by remote user');
+        resetCallUI();
+        alert('Call ended');
+    });
 
     socket.on('disconnect', () => {
         updateStatus('Disconnected from server', 'disconnected');
@@ -135,9 +131,9 @@ function addUser(user, isSelf = false) {
     userCard.className = `user-card ${isSelf ? 'self' : ''}`;
     userCard.id = `user-${user.id}`;
     userCard.innerHTML = `
-                <h3>${user.name}</h3>
-                ${!isSelf ? `<button onclick="callUser('${user.id}')" class="btn btn-success">Call</button>` : ''}
-            `;
+        <h3>${user.name}</h3>
+        ${!isSelf ? `<button onclick="callUser('${user.id}')" class="btn btn-success">Call</button>` : ''}
+    `;
     usersContainer.appendChild(userCard);
 }
 
@@ -161,7 +157,7 @@ async function startAudio() {
 
         startAudioBtn.style.display = 'none';
         endCallBtn.style.display = 'inline-block';
-        callStatusDiv.innerHTML = 'Audio started <span class="audio-indicator"></span>';
+        callStatusDiv.innerHTML = 'Audio started - Ready to call <span class="audio-indicator"></span>';
 
         console.log('Audio stream obtained');
     } catch (error) {
@@ -182,10 +178,13 @@ function callUser(targetUserId) {
     }
 
     currentCall = targetUserId;
-    
+
     // Уведомляем сервер о звонке
     socket.emit('call-user', { target: targetUserId });
-    
+
+    // Создаем peer как инициатор
+    const peer = createPeer(targetUserId, true);
+
     callStatusDiv.innerHTML = 'Calling...';
 }
 
@@ -199,7 +198,7 @@ function createPeer(targetUserId, initiator = false) {
     const peer = new SimplePeer({
         initiator: initiator,
         trickle: false,
-        stream: initiator ? localStream : null, // Только инициатор отправляет stream сразу
+        stream: initiator ? localStream : null,
         config: {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
@@ -226,12 +225,13 @@ function createPeer(targetUserId, initiator = false) {
         audio.srcObject = remoteStream;
         audio.autoplay = true;
         audio.controls = false;
+        audio.style.display = 'none';
         document.body.appendChild(audio);
     });
 
     peer.on('connect', () => {
         console.log('Peer connected');
-        callStatusDiv.innerHTML = `In call with user <span class="audio-indicator"></span>`;
+        callStatusDiv.innerHTML = `In call <span class="audio-indicator"></span>`;
     });
 
     peer.on('close', () => {
@@ -255,7 +255,7 @@ async function handleOffer(data) {
         return;
     }
 
-    // Сохраняем информацию о входящем звонке, но не создаем peer сразу
+    // Сохраняем информацию о входящем звонке
     pendingIncomingCall = {
         from: data.from,
         fromName: data.fromName,
@@ -266,10 +266,20 @@ async function handleOffer(data) {
     showIncomingCall(data.from, data.fromName);
 }
 
+function handleAnswer(data) {
+    console.log('Received answer from:', data.from);
+    if (peers[data.from] && !peers[data.from].destroyed) {
+        try {
+            peers[data.from].signal(data.answer);
+        } catch (error) {
+            console.error('Error processing answer:', error);
+        }
+    }
+}
+
 function showIncomingCall(fromUserId, fromUserName) {
     callerNameSpan.textContent = fromUserName;
     incomingCallDiv.style.display = 'block';
-    currentCall = fromUserId;
 }
 
 async function acceptCall() {
@@ -282,16 +292,16 @@ async function acceptCall() {
     incomingCallDiv.style.display = 'none';
     endCallBtn.style.display = 'inline-block';
     callStatusDiv.innerHTML = `In call <span class="audio-indicator"></span>`;
-    
+
     currentCall = pendingIncomingCall.from;
-    
-    // Создаем peer и обрабатываем offer только после принятия звонка
+
+    // Создаем peer и обрабатываем offer
     const peer = createPeer(pendingIncomingCall.from, false);
     peer.signal(pendingIncomingCall.offer);
-    
+
     // Уведомляем вызывающего, что звонок принят
     socket.emit('call-accepted', { target: pendingIncomingCall.from });
-    
+
     pendingIncomingCall = null;
 }
 
@@ -306,14 +316,18 @@ function rejectCall() {
 function endCall() {
     if (currentCall) {
         socket.emit('end-call', { target: currentCall });
-
-        if (peers[currentCall]) {
-            peers[currentCall].destroy();
-            delete peers[currentCall];
-        }
     }
 
     resetCallUI();
+}
+
+function resetCallUI() {
+    currentCall = null;
+    pendingIncomingCall = null;
+    startAudioBtn.style.display = 'inline-block';
+    endCallBtn.style.display = 'none';
+    callStatusDiv.textContent = '';
+    incomingCallDiv.style.display = 'none';
 
     // Stop local stream
     if (localStream) {
@@ -321,22 +335,16 @@ function endCall() {
         localStream = null;
     }
 
-    // Сбрасываем все peers
+    // Clean up all peers
     Object.keys(peers).forEach(peerId => {
-        if (peers[peerId]) {
+        if (peers[peerId] && !peers[peerId].destroyed) {
             peers[peerId].destroy();
         }
     });
     peers = {};
-}
 
-function resetCallUI() {
-    currentCall = null;
-    isInitiator = false;
-    startAudioBtn.style.display = 'inline-block';
-    endCallBtn.style.display = 'none';
-    callStatusDiv.textContent = '';
-    incomingCallDiv.style.display = 'none';
+    // Remove all audio elements
+    document.querySelectorAll('audio').forEach(audio => audio.remove());
 }
 
 // Cleanup on page unload
@@ -345,7 +353,11 @@ window.addEventListener('beforeunload', () => {
         socket.disconnect();
     }
 
-    Object.values(peers).forEach(peer => peer.destroy());
+    Object.values(peers).forEach(peer => {
+        if (peer && !peer.destroyed) {
+            peer.destroy();
+        }
+    });
 
     if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
